@@ -181,13 +181,16 @@ def train(hyp):
     # plt.savefig('LR.png', dpi=300)
 
     # Initialize distributed training
-    if device.type != 'cpu' and torch.cuda.device_count() > 1 and torch.distributed.is_available():
+    if device.type != 'cpu' and torch.cuda.device_count() >= 1 and torch.distributed.is_available():
+        print("Start process_group")
         dist.init_process_group(backend='nccl',  # 'distributed backend'
-                                init_method='tcp://127.0.0.1:9999',  # distributed training init method
-                                world_size=1,  # number of nodes for distributed training
+                                init_method='env://',  # distributed training init method
+                                world_size=2,  # number of nodes for distributed training
                                 rank=0)  # distributed training node rank
         model = torch.nn.parallel.DistributedDataParallel(model, find_unused_parameters=True)
         model.yolo_layers = model.module.yolo_layers  # move yolo layer indices to top level
+    else:
+        exit(1)
 
     # Dataset
     dataset = LoadImagesAndLabels(train_path, img_size, batch_size,
@@ -200,11 +203,14 @@ def train(hyp):
     # Dataloader
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count(), batch_size if batch_size > 1 else 0, 8])  # number of workers
+    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
     dataloader = torch.utils.data.DataLoader(dataset,
                                              batch_size=batch_size,
                                              num_workers=nw,
-                                             shuffle=not opt.rect,  # Shuffle=True unless rectangular training is used
+                                             #shuffle=not opt.rect,  # Shuffle=True unless rectangular training is used
+                                             shuffle=False,
                                              pin_memory=True,
+                                             sampler=train_sampler,
                                              collate_fn=dataset.collate_fn)
 
     # Testloader
@@ -238,6 +244,7 @@ def train(hyp):
     print('Using %g dataloader workers' % nw)
     print('Starting training for %g epochs...' % epochs)
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
+        train_sampler.set_epoch(epoch)
         model.train()
 
         # Update image weights (optional)
